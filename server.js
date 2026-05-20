@@ -1,15 +1,13 @@
 const express = require('express');
 const cors = require('cors');
 const app = express();
-
+ 
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Store last invoice number (starts at 1012, increments each use)
+ 
 let lastInvoiceNumber = 1011;
-
-// Calculate dock materials from boat dimensions
+ 
 function calcMaterials(length, beam) {
   const dockLen = length + 1;
   const dockWid = beam + 1;
@@ -26,65 +24,55 @@ function calcMaterials(length, beam) {
     bolts: bolts
   };
 }
-
-// Calculate airlift units from boat weight
+ 
 function calcAirlift(weight) {
   if (weight < 2500) return 0;
   return Math.ceil((weight - 2500) / 900) + 1;
 }
-
-// Format date as "21 May 2026"
+ 
 function formatDate(date) {
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
 }
-
-// Health check
+ 
 app.get('/', (req, res) => {
   res.json({ status: 'FloatXAU Quote Server is running' });
 });
-
-// Wix webhook receiver
+ 
 app.post('/wix-webhook', (req, res) => {
   try {
-    console.log('Received webhook:', JSON.stringify(req.body, null, 2));
-
-    // Extract fields from Wix form submission
-    // Wix sends data in different formats depending on version
     const body = req.body;
     
-    // Handle both Wix webhook formats
+    // Parse the submissions array from Wix
     let fields = {};
-    if (body.data && body.data.fields) {
-      // Wix Automations format
-      body.data.fields.forEach(f => { fields[f.fieldName] = f.fieldValue; });
-    } else if (body.formFields) {
-      body.formFields.forEach(f => { fields[f.fieldName] = f.fieldValue; });
-    } else {
-      // Direct field format
-      fields = body;
+    if (body.data && body.data.submissions && Array.isArray(body.data.submissions)) {
+      body.data.submissions.forEach(item => {
+        // Trim whitespace and newlines from labels
+        const label = item.label.trim();
+        fields[label] = item.value;
+      });
     }
-
-    // Map Wix field labels to our variables
-    const name = fields['Full Name'] || fields['full_name'] || fields['fullName'] || '';
-    const email = fields['Email'] || fields['email'] || '';
-    const phone = fields['Phone'] || fields['phone'] || '';
-    const makeModel = fields['Make/Model'] || fields['make_model'] || '';
-    const boatLength = parseFloat(fields['Boat Length (m)'] || fields['boat_length'] || 0);
-    const boatBeam = parseFloat(fields['Boat Width (m)'] || fields['boat_width'] || 0);
-    const boatWeight = parseFloat(fields['Boat Weight (kg)'] || fields['boat_weight'] || 0);
-    const jettyType = fields['Jetty Type'] || fields['jetty_type'] || '';
-
-    // Calculate materials
+ 
+    console.log('Parsed fields:', JSON.stringify(fields, null, 2));
+ 
+    const name = fields['Full Name'] || '';
+    const email = fields['Email'] || '';
+    const phone = fields['Phone'] || '';
+    const makeModel = fields['Make/Model'] || '';
+    const boatLength = parseFloat(fields['Boat Length (m)']) || 0;
+    const boatBeam = parseFloat(fields['Boat Width (m)']) || 0;
+    const boatWeight = parseFloat(fields['Boat Weight (kg)']) || 0;
+    const jettyType = fields['Jetty Type'] || '';
+ 
+    console.log(`Name: ${name}, Email: ${email}, Length: ${boatLength}, Beam: ${boatBeam}, Weight: ${boatWeight}`);
+ 
     const mats = (boatLength && boatBeam) ? calcMaterials(boatLength, boatBeam) : { blocks: 0, rollers: 0, pins: 0, bolts: 0 };
     const airlift = boatWeight ? calcAirlift(boatWeight) : 0;
-
-    // Increment invoice number
+ 
     lastInvoiceNumber += 1;
     const invoiceNumber = lastInvoiceNumber;
     const invoiceDate = formatDate(new Date());
-
-    // Build the pre-filled quote URL
+ 
     const quoteData = {
       name, email, phone, makeModel, jettyType,
       boatLength, boatBeam, boatWeight,
@@ -96,42 +84,35 @@ app.post('/wix-webhook', (req, res) => {
       invoiceNumber,
       invoiceDate
     };
-
-    // Encode data for URL
+ 
     const encoded = Buffer.from(JSON.stringify(quoteData)).toString('base64');
-    const quoteUrl = `${process.env.BASE_URL || 'https://your-app-url.com'}/quote?data=${encoded}`;
-
+    const baseUrl = process.env.BASE_URL || 'https://floatxau-server.onrender.com';
+    const quoteUrl = `${baseUrl}/quote?data=${encoded}`;
+ 
     console.log(`New quote request from ${name} — Invoice #${invoiceNumber}`);
     console.log(`Quote URL: ${quoteUrl}`);
     console.log(`Materials: ${mats.blocks} blocks, ${mats.rollers} rollers, ${mats.pins} pins, ${mats.bolts} bolts, ${airlift} airlift`);
-
-    res.json({
-      success: true,
-      message: 'Quote calculated successfully',
-      invoiceNumber,
-      quoteData,
-      quoteUrl
-    });
-
+ 
+    res.json({ success: true, invoiceNumber, quoteData, quoteUrl });
+ 
   } catch (err) {
     console.error('Webhook error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-// Quote page — serves pre-filled quote data
+ 
 app.get('/quote', (req, res) => {
   const data = req.query.data;
   let quoteData = {};
   
   try {
     if (data) {
-      quoteData = JSON.parse(Buffer.from(data, 'base64').decode || Buffer.from(data, 'base64').toString('utf8'));
+      quoteData = JSON.parse(Buffer.from(data, 'base64').toString('utf8'));
     }
   } catch(e) {
     console.error('Error parsing quote data:', e);
   }
-
+ 
   res.send(`<!DOCTYPE html>
 <html>
 <head>
@@ -151,12 +132,12 @@ app.get('/quote', (req, res) => {
     .field label { font-size: 12px; color: #666; }
     .field input { border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: 14px; width: 100%; }
     .field input:focus { outline: none; border-color: #111; }
-    .airlift-warn { background: #fff8e6; border: 1px solid #f0c040; border-radius: 6px; padding: 10px 14px; font-size: 13px; color: #8a6500; margin-top: 8px; }
+    .airlift-warn { background: #fff8e6; border: 1px solid #f0c040; border-radius: 6px; padding: 10px 14px; font-size: 13px; color: #8a6500; margin-top: 12px; }
     .btn-row { display: flex; gap: 10px; margin-top: 20px; }
     .btn-approve { background: #111; color: white; border: none; border-radius: 8px; padding: 12px 24px; font-size: 15px; font-weight: 500; cursor: pointer; flex: 2; }
     .btn-approve:hover { background: #333; }
-    .btn-back { background: white; color: #111; border: 1px solid #ddd; border-radius: 8px; padding: 12px 24px; font-size: 15px; cursor: pointer; flex: 1; }
-    .quote-preview { background: white; border-radius: 10px; border: 1px solid #e5e5e5; padding: 32px; margin-bottom: 16px; display: none; }
+    .btn-secondary { background: white; color: #111; border: 1px solid #ddd; border-radius: 8px; padding: 12px 24px; font-size: 15px; cursor: pointer; flex: 1; }
+    .quote-preview { background: white; border-radius: 10px; border: 1px solid #e5e5e5; padding: 32px; margin-top: 20px; display: none; }
     .quote-preview.active { display: block; }
     .logo-box { background: #111; color: white; display: inline-block; padding: 4px 10px; font-weight: 900; font-size: 16px; letter-spacing: 1px; border-radius: 2px; margin-bottom: 8px; }
     .quote-title { font-size: 28px; font-weight: 900; margin-bottom: 16px; color: #111; }
@@ -176,78 +157,72 @@ app.get('/quote', (req, res) => {
     .payment-text { font-size: 11px; color: #555; margin-bottom: 10px; line-height: 1.5; }
     .bank-details { font-size: 12px; line-height: 1.9; }
     .fine-print { font-size: 10px; color: #777; font-style: italic; margin-top: 10px; }
-    .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; }
-    .badge-warn { background: #fff3cd; color: #856404; }
-    .section-divider { border: none; border-top: 1px solid #eee; margin: 16px 0; }
-    @media print { body { background: white; padding: 0; } .no-print { display: none; } .quote-preview { border: none; } }
   </style>
 </head>
 <body>
 <div class="container">
-  <div class="no-print">
-    <h1>FloatXAU quote generator</h1>
-    <p class="subtitle">Review and edit the calculated quote, then approve to download the PDF.</p>
-
-    <div class="card">
-      <div class="card-title">Customer details</div>
-      <div class="grid2" style="margin-bottom:12px;">
-        <div class="field"><label>Full name</label><input type="text" id="custName" value="${quoteData.name || ''}" /></div>
-        <div class="field"><label>Phone</label><input type="text" id="custPhone" value="${quoteData.phone || ''}" /></div>
-      </div>
-      <div class="field"><label>Email</label><input type="text" id="custEmail" value="${quoteData.email || ''}" /></div>
+  <h1>FloatXAU quote generator</h1>
+  <p class="subtitle">Review and edit, then approve to download PDF.</p>
+ 
+  <div class="card">
+    <div class="card-title">Customer details</div>
+    <div class="grid2" style="margin-bottom:12px;">
+      <div class="field"><label>Full name</label><input type="text" id="custName" value="${quoteData.name || ''}" /></div>
+      <div class="field"><label>Phone</label><input type="text" id="custPhone" value="${quoteData.phone || ''}" /></div>
     </div>
-
-    <div class="card">
-      <div class="card-title">Invoice details</div>
-      <div class="grid2">
-        <div class="field"><label>Invoice number</label><input type="number" id="invNumber" value="${quoteData.invoiceNumber || ''}" /></div>
-        <div class="field"><label>Invoice date</label><input type="text" id="invDate" value="${quoteData.invoiceDate || ''}" /></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">Calculated quantities — edit if needed</div>
-      <div class="grid3" style="margin-bottom:12px;">
-        <div class="field"><label>Single blocks</label><input type="number" id="blocks" value="${quoteData.blocks || 0}" /></div>
-        <div class="field"><label>Roller blocks</label><input type="number" id="rollers" value="${quoteData.rollers || 0}" /></div>
-        <div class="field"><label>Flat pins</label><input type="number" id="pins" value="${quoteData.pins || 0}" /></div>
-      </div>
-      <div class="grid3">
-        <div class="field"><label>Bolts</label><input type="number" id="bolts" value="${quoteData.bolts || 0}" /></div>
-        <div class="field"><label>Airlift units</label><input type="number" id="airlift" value="${quoteData.airlift || 0}" /></div>
-        <div class="field"><label>Install fee (qty)</label><input type="number" id="install" value="1" /></div>
-      </div>
-      ${quoteData.airlift > 0 ? `<div class="airlift-warn" style="margin-top:12px;">⚠ Airlift required — boat weight ${quoteData.boatWeight}kg (${quoteData.airlift} unit${quoteData.airlift > 1 ? 's' : ''})</div>` : ''}
-    </div>
-
-    <div class="card">
-      <div class="card-title">Boat info (for your reference)</div>
-      <div class="grid3">
-        <div class="field"><label>Make/Model</label><input type="text" id="makeModel" value="${quoteData.makeModel || ''}" readonly style="background:#f9f9f9;" /></div>
-        <div class="field"><label>Length × Beam</label><input type="text" value="${quoteData.boatLength || ''}m × ${quoteData.boatBeam || ''}m" readonly style="background:#f9f9f9;" /></div>
-        <div class="field"><label>Weight</label><input type="text" value="${quoteData.boatWeight || ''}kg" readonly style="background:#f9f9f9;" /></div>
-      </div>
-    </div>
-
-    <div class="btn-row">
-      <button class="btn-back" onclick="previewQuote()">Preview quote</button>
-      <button class="btn-approve" onclick="generatePDF()">✓ Approve & download PDF</button>
+    <div class="field"><label>Email</label><input type="text" id="custEmail" value="${quoteData.email || ''}" /></div>
+  </div>
+ 
+  <div class="card">
+    <div class="card-title">Invoice details</div>
+    <div class="grid2">
+      <div class="field"><label>Invoice number</label><input type="number" id="invNumber" value="${quoteData.invoiceNumber || ''}" /></div>
+      <div class="field"><label>Invoice date</label><input type="text" id="invDate" value="${quoteData.invoiceDate || ''}" /></div>
     </div>
   </div>
-
-  <div class="quote-preview no-print" id="preview-box">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;" class="no-print">
+ 
+  <div class="card">
+    <div class="card-title">Calculated quantities — edit if needed</div>
+    <div class="grid3" style="margin-bottom:12px;">
+      <div class="field"><label>Single blocks</label><input type="number" id="blocks" value="${quoteData.blocks || 0}" /></div>
+      <div class="field"><label>Roller blocks</label><input type="number" id="rollers" value="${quoteData.rollers || 0}" /></div>
+      <div class="field"><label>Flat pins</label><input type="number" id="pins" value="${quoteData.pins || 0}" /></div>
+    </div>
+    <div class="grid3">
+      <div class="field"><label>Bolts</label><input type="number" id="bolts" value="${quoteData.bolts || 0}" /></div>
+      <div class="field"><label>Airlift units</label><input type="number" id="airlift" value="${quoteData.airlift || 0}" /></div>
+      <div class="field"><label>Install fee (qty)</label><input type="number" id="install" value="1" /></div>
+    </div>
+    ${quoteData.airlift > 0 ? `<div class="airlift-warn">⚠ Airlift required — boat weight ${quoteData.boatWeight}kg (${quoteData.airlift} unit${quoteData.airlift > 1 ? 's' : ''})</div>` : ''}
+  </div>
+ 
+  <div class="card">
+    <div class="card-title">Boat info (reference only)</div>
+    <div class="grid3">
+      <div class="field"><label>Make/Model</label><input type="text" value="${quoteData.makeModel || ''}" readonly style="background:#f9f9f9;" /></div>
+      <div class="field"><label>Length × Beam</label><input type="text" value="${quoteData.boatLength || ''}m × ${quoteData.boatBeam || ''}m" readonly style="background:#f9f9f9;" /></div>
+      <div class="field"><label>Weight</label><input type="text" value="${quoteData.boatWeight || ''}kg" readonly style="background:#f9f9f9;" /></div>
+    </div>
+  </div>
+ 
+  <div class="btn-row">
+    <button class="btn-secondary" onclick="previewQuote()">Preview quote</button>
+    <button class="btn-approve" onclick="generatePDF()">✓ Approve & download PDF</button>
+  </div>
+ 
+  <div class="quote-preview" id="preview-box">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div style="font-size:14px;font-weight:600;">Quote preview</div>
-      <button class="btn-back" onclick="closePreview()" style="padding:6px 14px;font-size:13px;">Close preview</button>
+      <button class="btn-secondary" onclick="closePreview()" style="padding:6px 14px;font-size:13px;">Close</button>
     </div>
     <div id="quote-render"></div>
   </div>
 </div>
-
+ 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 const PRICES = { blocks: 100, rollers: 200, pins: 25, bolts: 15, airlift: 5000, install: 1000 };
-
+ 
 function getValues() {
   return {
     name: document.getElementById('custName').value,
@@ -263,9 +238,9 @@ function getValues() {
     install: parseInt(document.getElementById('install').value) || 1,
   };
 }
-
+ 
 function fmt(n) { return '$' + n.toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2}); }
-
+ 
 function calcTotals(v) {
   const subtotal = (v.blocks*PRICES.blocks)+(v.rollers*PRICES.rollers)+(v.pins*PRICES.pins)+(v.bolts*PRICES.bolts)+(v.airlift*PRICES.airlift)+(v.install*PRICES.install);
   const gst = subtotal * 0.1;
@@ -273,7 +248,7 @@ function calcTotals(v) {
   const deposit = total * 0.3;
   return { subtotal, gst, total, deposit };
 }
-
+ 
 function buildQuoteHTML(v) {
   const t = calcTotals(v);
   return \`
@@ -324,18 +299,18 @@ function buildQuoteHTML(v) {
     <div class="fine-print">I confirm that if installation does not occur within 60 days of receipt of the deposit, the deposit shall be fully refunded.</div>
   \`;
 }
-
+ 
 function previewQuote() {
   const v = getValues();
   document.getElementById('quote-render').innerHTML = buildQuoteHTML(v);
   document.getElementById('preview-box').classList.add('active');
   document.getElementById('preview-box').scrollIntoView({behavior:'smooth'});
 }
-
+ 
 function closePreview() {
   document.getElementById('preview-box').classList.remove('active');
 }
-
+ 
 function generatePDF() {
   const v = getValues();
   const t = calcTotals(v);
@@ -343,7 +318,7 @@ function generatePDF() {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const W = 210, M = 20;
   let y = 20;
-
+ 
   doc.setFillColor(17,17,17);
   doc.rect(M, y, 28, 8, 'F');
   doc.setTextColor(255,255,255);
@@ -351,12 +326,12 @@ function generatePDF() {
   doc.setFont('helvetica','bold');
   doc.text('FLOATX', M+4, y+5.5);
   y += 14;
-
+ 
   doc.setTextColor(17,17,17);
   doc.setFontSize(24);
   doc.text('Quote', M, y);
   y += 10;
-
+ 
   const hw = (W - M*2) / 2;
   const infoRows = [
     ['NAME', 'Rohan Baldwin', 'BILLED TO', v.name],
@@ -375,16 +350,16 @@ function generatePDF() {
     doc.setFont('helvetica','normal');
     doc.setFontSize(9);
     doc.text(row[1], M+2, y+9);
-    doc.text(row[3], M+hw+2, y+9);
+    doc.text(String(row[3]), M+hw+2, y+9);
     y += 12;
   });
-
+ 
   y += 5;
   doc.setFont('helvetica','bold');
   doc.setFontSize(10);
   doc.text('Invoice Date: ' + v.invDate, M, y); y+=6;
   doc.text('Invoice Number: #' + v.invNumber, M, y); y+=8;
-
+ 
   const cols = [80,30,35,35];
   const headers = ['Item','Quantity','Cost/Unit','Subtotal'];
   doc.setFillColor(240,240,240);
@@ -394,7 +369,7 @@ function generatePDF() {
   let x = M;
   headers.forEach((h,i) => { doc.text(h, x+2, y+5.5); x+=cols[i]; });
   y += 8;
-
+ 
   const items = [
     ['Single Blocks', v.blocks, PRICES.blocks, v.blocks*PRICES.blocks],
     ['Roller Blocks', v.rollers, PRICES.rollers, v.rollers*PRICES.rollers],
@@ -403,7 +378,7 @@ function generatePDF() {
     ['Airlift', v.airlift, PRICES.airlift, v.airlift*PRICES.airlift],
     ['Install Fee', v.install, PRICES.install, v.install*PRICES.install],
   ];
-
+ 
   doc.setFont('helvetica','normal');
   items.forEach(item => {
     doc.setDrawColor(220,220,220);
@@ -415,7 +390,7 @@ function generatePDF() {
     doc.text(fmt(item[3]), x+2, y+5.5);
     y += 8;
   });
-
+ 
   const summaryRows = [
     ['SUBTOTAL (AUD)', fmt(t.subtotal), false],
     ['GST (10%)', fmt(t.gst), false],
@@ -433,7 +408,7 @@ function generatePDF() {
     doc.text(row[1], M+cols[0]+cols[1]+cols[2]+2, y+5.5);
     y += 8;
   });
-
+ 
   y += 8;
   doc.setFont('helvetica','bold');
   doc.setFontSize(14);
@@ -443,30 +418,31 @@ function generatePDF() {
   const payText = 'Please make payment for the deposit within 7 days of the invoice date using the following bank information. The remaining amount will be invoiced upon delivery.';
   const lines = doc.splitTextToSize(payText, W-M*2);
   doc.text(lines, M, y); y += lines.length * 5 + 4;
-
+ 
   doc.setFontSize(9);
   ['ACCOUNT NAME: Rohan Baldwin','BSB: 774-001','ACCOUNT NUMBER: 214595067',\`REFERENCE: \${v.invNumber}\`,'ABN: 32 655 285 406'].forEach(line => {
     doc.text(line, M, y); y+=5;
   });
-
+ 
   y+=4;
   doc.setFontSize(8);
   doc.setTextColor(120,120,120);
   const fineLines = doc.splitTextToSize('I confirm that if installation does not occur within 60 days of receipt of the deposit, the deposit shall be fully refunded.', W-M*2);
   doc.text(fineLines, M, y);
-
+ 
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const now = new Date();
   const dateStr = now.getDate() + months[now.getMonth()];
-  const filename = v.name.replace(/\\s+/g,'_') + '_Quote_' + dateStr + '.pdf';
+  const filename = v.name.replace(/\s+/g,'_') + '_Quote_' + dateStr + '.pdf';
   doc.save(filename);
 }
 </script>
 </body>
 </html>`);
 });
-
+ 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`FloatXAU Quote Server running on port ${PORT}`);
 });
+ 
